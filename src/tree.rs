@@ -1,35 +1,59 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::iter::Peekable;
 use std::{fmt::Debug, fmt::Display, rc::Rc, str::Chars};
 
+#[derive(Clone)]
 pub enum DAG<T: Clone> {
     Leaf(T),
     Branch(Rc<DAG<T>>, Rc<DAG<T>>),
 }
 
-pub enum LabelTree<T: Clone, S: Clone> {
-    Leaf(T, Rc<DAG<S>>),
-    Branch(Rc<LabelTree<T, S>>, Rc<LabelTree<T, S>>, T, Rc<DAG<S>>),
+struct TreeTransformation<T: Clone> {
+    source_to_target: Rc<DAG<Rc<DAG<T>>>>,
+    target: Rc<DAG<T>>,
 }
 
-impl<T: Clone, S: Clone> LabelTree<S, T> {
-    fn value(&self) -> &S {
-        match self {
-            Self::Leaf(value, _) => value,
-            Self::Branch(_, _, value, _) => value,
+impl<T: Clone + Eq + Hash> TreeTransformation<T> {
+    fn from_labels(left: Rc<DAG<T>>, right: Rc<DAG<T>>) -> Self {
+        let mut label_map = HashMap::new();
+        right.compute_label_map(&right, &|label| label.clone(), &mut label_map);
+        let embedding = left.map(&mut (), &|_, value: &T, _| {
+            label_map.get(value).unwrap().clone()
+        });
+
+        TreeTransformation {
+            source_to_target: embedding,
+            target: right,
         }
     }
 }
 
-impl<T: Clone> LabelTree<usize, T> {}
-
-impl<T: Clone> LabelTree<HashSet<usize>, T> {
-    fn fill_iso_classes(self) -> ! {
-        todo!()
-    }
-}
-
 impl<T: Clone> DAG<T> {
+    fn map<S, R: Clone, F: Fn(&mut S, &T, &Self) -> R>(
+        self: &Rc<Self>,
+        state: &mut S,
+        transformer: &F,
+    ) -> Rc<DAG<R>> {
+        self.replace_leaves(state, &|state, value, leaf| {
+            Rc::new(DAG::<R>::Leaf(transformer(state, value, leaf)))
+        })
+    }
+
+    fn replace_leaves<S, R: Clone, F: Fn(&mut S, &T, &Self) -> Rc<DAG<R>>>(
+        self: &Rc<Self>,
+        state: &mut S,
+        transformer: &F,
+    ) -> Rc<DAG<R>> {
+        match self.as_ref() {
+            DAG::Leaf(value) => transformer(state, value, self.as_ref()),
+            DAG::Branch(left, right) => Rc::new(DAG::<R>::Branch(
+                left.replace_leaves(state, transformer),
+                right.replace_leaves(state, transformer),
+            )),
+        }
+    }
+
     fn all_matches(
         self: &Rc<Self>,
         pattern_table: &HashMap<(usize, usize), usize>,
@@ -114,27 +138,36 @@ impl<T: Clone> DAG<T> {
         }))
     }
 
-    fn insert(self: &Rc<Self>, root: &Rc<DAG<T>>, subtree: &Rc<DAG<T>>) -> Rc<DAG<T>> {
+    fn copying_insert(self: &Rc<Self>, root: &Rc<DAG<T>>, subtree: &Rc<DAG<T>>) -> Rc<DAG<T>> {
         if Rc::ptr_eq(self, root) {
             return subtree.clone();
         }
         Rc::new({
             match self.as_ref() {
                 DAG::Leaf(value) => DAG::Leaf(value.clone()),
-                DAG::Branch(left, right) => {
-                    DAG::Branch(left.insert(root, subtree), right.insert(root, subtree))
-                }
+                DAG::Branch(left, right) => DAG::Branch(
+                    left.copying_insert(root, subtree),
+                    right.copying_insert(root, subtree),
+                ),
             }
         })
     }
 
-    fn substitue(
-        self: &Rc<Self>,
-        root: &Rc<Self>,
-        pattern: &Rc<Self>,
-        replacement: &Rc<DAG<Rc<Self>>>, // map from replacement to pattern
-    ) {
-        let embedding = self.pattern_embedding(root, pattern).unwrap();
+    fn substitue(self: &Rc<Self>, root: &Rc<Self>, transform: &TreeTransformation<T>) -> Rc<Self> {
+        let embedding_map = transform.source_to_target.compute_embedding_map(root);
+
+        let replacement = transform.target.replace_leaves(&mut (), &|_, _, leaf| {
+            // be sure to really make a copy of the tree not just the references
+            Rc::new(
+                embedding_map
+                    .get(&(leaf as *const DAG<T>))
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+            )
+        });
+
+        self.copying_insert(root, &replacement)
     }
 
     fn serialize(self: &Rc<Self>, result: &mut Vec<u8>) {
@@ -171,6 +204,45 @@ impl<T: Clone> DAG<T> {
         println!("{:?}", s);
         self.ith_preorder_node(kmp(&s, needle_len).unwrap())
             .expect_err("too few nodes :(")
+    }
+}
+
+impl<T: Clone> DAG<T> {
+    fn compute_label_map<K: Eq + Hash, S: Clone, F: Fn(&T) -> K>(
+        self: &Rc<Self>,
+        embedded_root: &Rc<DAG<S>>,
+        labeler: &F,
+        label_map: &mut HashMap<K, Rc<DAG<S>>>,
+    ) {
+        match self.as_ref() {
+            Self::Leaf(value) => {
+                label_map.insert(labeler(value), embedded_root.clone());
+            }
+            Self::Branch(left, right) => {
+                if let DAG::<S>::Branch(left_root, right_root) = embedded_root.as_ref() {
+                    left.compute_label_map(left_root, labeler, label_map);
+                    right.compute_label_map(right_root, labeler, label_map);
+                } else {
+                    panic!("Self not embedded at this location")
+                }
+            }
+        };
+    }
+}
+
+impl<T: Clone> DAG<Rc<DAG<T>>> {
+    fn compute_embedding_map(
+        self: &Rc<Self>,
+        root: &Rc<DAG<T>>,
+    ) -> HashMap<*const DAG<T>, Rc<DAG<T>>> {
+        let mut label_map = HashMap::new();
+
+        self.compute_label_map(
+            root,
+            &|subtree: &Rc<DAG<T>>| subtree.as_ref() as *const DAG<T>,
+            &mut label_map,
+        );
+        label_map
     }
 }
 
@@ -276,18 +348,19 @@ mod test {
     #[test]
     fn test_match() {
         let haystack = DAG::parse("a * (c * (b * d))");
-        let needle = DAG::parse("a * (b * c)");
+        let before = DAG::parse("a * (b * c)");
+        let after: Rc<DAG<String>> = DAG::parse("(b * a) * c");
 
-        let table = needle.build_pattern_table();
+        let table = before.build_pattern_table();
+        let transform = TreeTransformation::from_labels(before, after);
+
         let matched = haystack.all_matches(&table);
 
-        let first_match = &matched[0];
+        let first_match = &matched[1];
 
-        let replaced = haystack.substitue(first_match, &needle);
+        let replaced = haystack.substitue(first_match, &transform);
 
-        println!("{:?}", replaced);
         println!("{:?}", matched);
-
-        let after_op = DAG::parse("");
+        println!("{:?}", replaced);
     }
 }
