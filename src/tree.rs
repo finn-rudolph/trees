@@ -3,29 +3,62 @@ use std::hash::Hash;
 use std::iter::Peekable;
 use std::{fmt::Debug, fmt::Display, rc::Rc, str::Chars};
 
-#[derive(Clone)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub enum DAG<T: Clone> {
     Leaf(T),
     Branch(Rc<DAG<T>>, Rc<DAG<T>>),
 }
 
+type TreeMap<T> = DAG<Rc<DAG<T>>>;
+
 struct TreeTransformation<T: Clone> {
-    source_to_target: Rc<DAG<Rc<DAG<T>>>>,
+    source_pattern_table: HashMap<(usize, usize), usize>,
+    source_to_target: Rc<TreeMap<T>>,
     target: Rc<DAG<T>>,
 }
 
-impl<T: Clone + Eq + Hash> TreeTransformation<T> {
-    fn from_labels(left: Rc<DAG<T>>, right: Rc<DAG<T>>) -> Self {
-        let mut label_map = HashMap::new();
-        right.compute_label_map(&right, &|label| label.clone(), &mut label_map);
-        let embedding = left.map(&mut (), &|_, value: &T, _| {
-            label_map.get(value).unwrap().clone()
-        });
+struct TreeEquivalence<T: Clone> {
+    left: Rc<DAG<T>>,
+    right: Rc<DAG<T>>,
+    left_to_right: Rc<TreeTransformation<T>>,
+    right_to_left: Rc<TreeTransformation<T>>,
+}
 
-        TreeTransformation {
-            source_to_target: embedding,
-            target: right,
+struct TreeEquivalenceClass<T: Clone> {
+    trees: HashSet<Rc<DAG<T>>>,
+    equivalences: HashMap<Rc<DAG<T>>, Rc<TreeEquivalence<T>>>,
+}
+
+impl<T: Clone + Eq + Hash> TreeEquivalence<T> {
+    fn from_labels(left: Rc<DAG<T>>, right: Rc<DAG<T>>) -> Self {
+        TreeEquivalence {
+            left_to_right: Rc::new(TreeTransformation::from_labels(&left, &right)),
+            right_to_left: Rc::new(TreeTransformation::from_labels(&right, &left)),
+            left,
+            right,
         }
+    }
+}
+
+impl<T: Clone + Eq + Hash> TreeTransformation<T> {
+    fn embedding_from_labels(before: &Rc<DAG<T>>, after: &Rc<DAG<T>>) -> Rc<TreeMap<T>> {
+        let mut label_map = HashMap::new();
+        after.compute_label_table(after, &|label| label.clone(), &mut label_map);
+        before.map(&mut (), &|_, value: &T, _| {
+            label_map.get(value).unwrap().clone()
+        })
+    }
+
+    fn from_labels(before: &Rc<DAG<T>>, after: &Rc<DAG<T>>) -> Self {
+        TreeTransformation {
+            source_pattern_table: before.build_pattern_table(),
+            source_to_target: Self::embedding_from_labels(&before, &after),
+            target: after.clone(),
+        }
+    }
+
+    fn all_matches(&self, haystack: &Rc<DAG<T>>) -> Vec<Rc<DAG<T>>> {
+        haystack.all_matches(&self.source_pattern_table)
     }
 }
 
@@ -114,30 +147,6 @@ impl<T: Clone> DAG<T> {
         }
     }
 
-    fn pattern_embedding(
-        self: &Rc<Self>,
-        root: &Rc<Self>,
-        pattern: &Rc<Self>,
-    ) -> Option<Rc<DAG<Rc<Self>>>> {
-        if !Rc::ptr_eq(self, root) {
-            return match self.as_ref() {
-                Self::Leaf(_) => None,
-                Self::Branch(left, right) => left
-                    .pattern_embedding(root, pattern)
-                    .or(right.pattern_embedding(root, pattern)),
-            };
-        }
-
-        Some(Rc::new(match (self.as_ref(), pattern.as_ref()) {
-            (DAG::Leaf(_), DAG::Leaf(_)) => DAG::Leaf(self.clone()),
-            (DAG::Branch(left, right), DAG::Branch(left_pattern, right_pattern)) => DAG::Branch(
-                left.pattern_embedding(left, left_pattern).unwrap(),
-                right.pattern_embedding(right, right_pattern).unwrap(),
-            ),
-            _ => panic!("Pattern is not embedded at this location"),
-        }))
-    }
-
     fn copying_insert(self: &Rc<Self>, root: &Rc<DAG<T>>, subtree: &Rc<DAG<T>>) -> Rc<DAG<T>> {
         if Rc::ptr_eq(self, root) {
             return subtree.clone();
@@ -154,7 +163,7 @@ impl<T: Clone> DAG<T> {
     }
 
     fn substitue(self: &Rc<Self>, root: &Rc<Self>, transform: &TreeTransformation<T>) -> Rc<Self> {
-        let embedding_map = transform.source_to_target.compute_embedding_map(root);
+        let embedding_map = transform.source_to_target.compute_embedding_table(root);
 
         let replacement = transform.target.replace_leaves(&mut (), &|_, _, leaf| {
             // be sure to really make a copy of the tree not just the references
@@ -170,45 +179,7 @@ impl<T: Clone> DAG<T> {
         self.copying_insert(root, &replacement)
     }
 
-    fn serialize(self: &Rc<Self>, result: &mut Vec<u8>) {
-        match self.as_ref() {
-            // avoid string allocations
-            DAG::Branch(left, right) => {
-                result.push(0);
-                left.serialize(result);
-                right.serialize(result);
-            }
-            DAG::Leaf(_) => {
-                result.push(1);
-            }
-        }
-    }
-
-    fn ith_preorder_node(self: &Rc<Self>, i: usize) -> Result<usize, Rc<Self>> {
-        if i == 0 {
-            return Err(self.clone());
-        }
-
-        match self.as_ref() {
-            DAG::Leaf(_) => Ok(i - 1),
-            DAG::Branch(left, right) => right.ith_preorder_node(left.ith_preorder_node(i - 1)?),
-        }
-    }
-
-    fn find_as_subtree(self: Rc<Self>, pattern: Rc<Self>) -> Rc<Self> {
-        let mut s = Vec::<u8>::new();
-        pattern.serialize(&mut s);
-        let needle_len = s.len();
-        s.push(42);
-        self.serialize(&mut s);
-        println!("{:?}", s);
-        self.ith_preorder_node(kmp(&s, needle_len).unwrap())
-            .expect_err("too few nodes :(")
-    }
-}
-
-impl<T: Clone> DAG<T> {
-    fn compute_label_map<K: Eq + Hash, S: Clone, F: Fn(&T) -> K>(
+    fn compute_label_table<K: Eq + Hash, S: Clone, F: Fn(&T) -> K>(
         self: &Rc<Self>,
         embedded_root: &Rc<DAG<S>>,
         labeler: &F,
@@ -220,8 +191,8 @@ impl<T: Clone> DAG<T> {
             }
             Self::Branch(left, right) => {
                 if let DAG::<S>::Branch(left_root, right_root) = embedded_root.as_ref() {
-                    left.compute_label_map(left_root, labeler, label_map);
-                    right.compute_label_map(right_root, labeler, label_map);
+                    left.compute_label_table(left_root, labeler, label_map);
+                    right.compute_label_table(right_root, labeler, label_map);
                 } else {
                     panic!("Self not embedded at this location")
                 }
@@ -230,14 +201,14 @@ impl<T: Clone> DAG<T> {
     }
 }
 
-impl<T: Clone> DAG<Rc<DAG<T>>> {
-    fn compute_embedding_map(
+impl<T: Clone> TreeMap<T> {
+    fn compute_embedding_table(
         self: &Rc<Self>,
         root: &Rc<DAG<T>>,
     ) -> HashMap<*const DAG<T>, Rc<DAG<T>>> {
         let mut label_map = HashMap::new();
 
-        self.compute_label_map(
+        self.compute_label_table(
             root,
             &|subtree: &Rc<DAG<T>>| subtree.as_ref() as *const DAG<T>,
             &mut label_map,
@@ -273,26 +244,6 @@ impl DAG<String> {
     }
 }
 
-impl DAG<()> {
-    fn deserialize(input: &[u8]) -> Rc<Self> {
-        let (tree, leftover) = Self::deserialize_inner(input);
-        assert_eq!(leftover.len(), 0);
-        tree
-    }
-
-    fn deserialize_inner(input: &[u8]) -> (Rc<Self>, &[u8]) {
-        match input[0] {
-            1 => (Rc::new(Self::Leaf(())), &input[1..]),
-            0 => {
-                let (lefttree, leftover) = Self::deserialize_inner(&input[1..]);
-                let (righttree, rightover) = Self::deserialize_inner(leftover);
-                (Rc::new(DAG::Branch(lefttree, righttree)), rightover)
-            }
-            _ => panic!(),
-        }
-    }
-}
-
 impl<T: Display + Clone> Display for DAG<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -311,56 +262,36 @@ impl<T: Display + Clone> Debug for DAG<T> {
     }
 }
 
-fn kmp(s: &[u8], needle_len: usize) -> Option<usize> {
-    let (mut i, mut j): (usize, usize) = (1, 0);
-    let mut pi = vec![0usize; s.len()];
-
-    while i < s.len() {
-        while s[i] != s[j] && j != 0 {
-            j = pi[j - 1];
-        }
-        j += (s[i] == s[j]) as usize;
-        pi[i] = j;
-        if pi[i] == needle_len {
-            println!("i={}, {:?}", i, pi);
-            println!("i - needle {}", i - needle_len);
-            return Some(i - needle_len);
-        }
-        i += 1;
-    }
-
-    None
-}
-
 mod test {
     use super::*;
 
     #[test]
-    fn test_serialize() {
-        let s = &[0, 1, 0, 1, 0, 1, 1];
-        let tree = DAG::deserialize(s);
-        let mut serialized = Vec::<u8>::new();
-        tree.serialize(&mut serialized);
-        assert_eq!(serialized, s);
-        println!("{:?}", serialized);
+    fn test_eq() {
+        assert_eq!(DAG::parse("a * (b * c)"), DAG::parse("a  * (b * c)"));
+        assert_ne!(DAG::parse("a * (b * c)"), DAG::parse("a * (d * c)"));
     }
 
     #[test]
     fn test_match() {
         let haystack = DAG::parse("a * (c * (b * d))");
-        let before = DAG::parse("a * (b * c)");
-        let after: Rc<DAG<String>> = DAG::parse("(b * a) * c");
 
-        let table = before.build_pattern_table();
-        let transform = TreeTransformation::from_labels(before, after);
+        let left = DAG::parse("a * (b * c)");
+        let right: Rc<DAG<String>> = DAG::parse("(b * a) * c");
 
-        let matched = haystack.all_matches(&table);
+        let equivalence = TreeEquivalence::from_labels(left, right);
+
+        let matched = equivalence.left_to_right.all_matches(&haystack);
 
         let first_match = &matched[1];
 
-        let replaced = haystack.substitue(first_match, &transform);
+        let replaced = haystack.substitue(first_match, &equivalence.left_to_right);
 
         println!("{:?}", matched);
         println!("{:?}", replaced);
+
+        let class: TreeEquivalenceClass<String> = TreeEquivalenceClass {
+            trees: HashSet::new(),
+            equivalences: HashMap::new(),
+        };
     }
 }
