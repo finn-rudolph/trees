@@ -128,7 +128,7 @@ fn main() {
 
     let (left, right) = args.equivalence.split_once("=").unwrap();
     let (left_tree, right_tree) = (DAG::<String>::parse(left), DAG::<String>::parse(right));
-    for tree in TreeIterator::<u64>::new(15) {
+    for tree in TreeIterator::<u64>::new(args.leaves) {
         println!("{:?}", tree)
     }
 }
