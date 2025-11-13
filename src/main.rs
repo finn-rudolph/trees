@@ -4,9 +4,8 @@
 
 mod tree;
 
-use crate::tree::DAG;
+use crate::tree::{DAG, TreeEquivalence};
 use clap::Parser;
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 #[derive(Parser)]
@@ -114,21 +113,22 @@ impl<T: Default + Clone> Iterator for TreeIterator<T> {
     }
 }
 
-/*
-fn gen_tree(tree :Vec<u8>, leaves, callback) {
-    if leaves == n {
-        callback(tree)
-    }
-    place leaf node, tree += [1], return;
-    place branch node, tree += [0], gen_tree, gen_tree;
-}
-*/
 fn main() {
     let args = Args::parse();
 
     let (left, right) = args.equivalence.split_once("=").unwrap();
     let (left_tree, right_tree) = (DAG::<String>::parse(left), DAG::<String>::parse(right));
-    for tree in TreeIterator::<u64>::new(args.leaves) {
-        println!("{:?}", tree)
+
+    let equivalence = TreeEquivalence::from_labels(left_tree, right_tree);
+
+    for tree in TreeIterator::<String>::new(args.leaves) {
+        let tree = Rc::new(tree);
+        let matched = equivalence.left_to_right.all_matches(&tree);
+        for the_match in matched {
+            let (_substituted, new_equivalence) =
+                tree.substitue(&the_match, &equivalence.left_to_right);
+
+            println!("{}", new_equivalence);
+        }
     }
 }
