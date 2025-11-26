@@ -56,7 +56,7 @@ impl<T: Clone + Display> Display for TreeTransformation<T> {
                     .map_or("<unk>".into(), |label| format!("<{}>", label))
             });
 
-            writeln!(f, "{} -> {}", formatted_source, formatted_target)
+            write!(f, "{} -> {}", formatted_source, formatted_target)
         }
     }
 }
@@ -183,7 +183,7 @@ impl<T: Clone> DAG<T> {
         )
     }
 
-    fn map<R: Clone, F: FnMut(&Rc<Self>, &T) -> R>(
+    pub fn map<R: Clone, F: FnMut(&Rc<Self>, &T) -> R>(
         self: &Rc<Self>,
         transformer: &mut F,
     ) -> Rc<DAG<R>> {
@@ -195,7 +195,7 @@ impl<T: Clone> DAG<T> {
         )
     }
 
-    fn all_matches(
+    pub fn all_matches(
         self: &Rc<Self>,
         pattern_table: &HashMap<(usize, usize), usize>,
     ) -> Vec<Rc<Self>> {
@@ -274,7 +274,6 @@ impl<T: Clone> DAG<T> {
         let mut result_map = TreeMap::new();
 
         let replacement = transform.target.replace_leaves(&mut |leaf, _| {
-            // be sure to really make a copy of the tree not just the references
             embedding_map
                 .lookup(transform.target_to_source.lookup(leaf).as_ref())
                 .tracked_clone(&mut result_map)
@@ -338,25 +337,22 @@ impl DAG<String> {
     }
 }
 
-impl DAG<()> {
-    fn deserialize(input: &[u8]) -> Rc<Self> {
-        let (tree, leftover) = Self::deserialize_inner(input);
-        assert_eq!(leftover.len(), 0);
-        tree
-    }
-
-    fn deserialize_inner(input: &[u8]) -> (Rc<Self>, &[u8]) {
-        match input[0] {
-            1 => (Rc::new(Self::Leaf(())), &input[1..]),
-            0 => {
-                let (left, leftover) = Self::deserialize_inner(&input[1..]);
-                let (right, rightover) = Self::deserialize_inner(leftover);
-                (Rc::new(DAG::Branch(left, right)), rightover)
-            }
-            _ => panic!(),
-        }
-    }
-}
+// impl Debug for DAG<()> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             DAG::Leaf(_) => {
+//                 write!(f, "[-]")
+//             }
+//             DAG::Branch(left, right) => {
+//                 write!(f, "(")?;
+//                 Debug::fmt(left, f)?;
+//                 write!(f, " * ")?;
+//                 Debug::fmt(right, f)?;
+//                 write!(f, ")")
+//             }
+//         }
+//     }
+// }
 
 impl<T: Display + Clone> Display for DAG<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -379,21 +375,21 @@ impl<T: Display + Clone> Display for DAG<T> {
     }
 }
 
-impl<T: Display + Clone> Debug for DAG<T> {
+impl<T: Debug + Clone> Debug for DAG<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DAG::Leaf(val) => {
                 if f.alternate() {
                     write!(f, "{:#x}", (self as *const Self).addr())
                 } else {
-                    write!(f, "{}", val)
+                    write!(f, "{:?}", val)
                 }
             }
             DAG::Branch(left, right) => {
                 write!(f, "(")?;
-                Display::fmt(left, f)?;
+                Debug::fmt(left, f)?;
                 write!(f, " * ")?;
-                Display::fmt(right, f)?;
+                Debug::fmt(right, f)?;
                 write!(f, ")")
             }
         }
