@@ -3,12 +3,11 @@
 #![feature(stmt_expr_attributes)]
 
 mod iter;
+mod maps;
+mod transform;
 mod tree;
 
-use crate::{
-    iter::TreeIterator,
-    tree::{DAG, TreeEquivalence},
-};
+use crate::{iter::TreeIterator, maps::TreeEquivalence, tree::DAG};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -34,12 +33,14 @@ fn main() {
 
     for tree in TreeIterator::<String, _, _>::new('a'..='z', args.leaves) {
         println!("tree: {}", tree);
-        let matched = equivalence.left_to_right.all_matches(&tree);
-        for the_match in matched {
-            let (substituted, _new_equivalence) =
-                tree.substitue(&the_match, &equivalence.left_to_right);
+        let transform = equivalence.right_to_left();
 
+        let matched = transform.matches(&tree);
+        for the_match in matched {
+            let (substituted, new_equivalence) = transform.apply(&tree, &the_match);
             println!("{}", substituted);
+            println!("{}", new_equivalence);
+            // println!("{}", new_equivalence.right_to_left);
         }
     }
 }
