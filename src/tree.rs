@@ -3,6 +3,8 @@ use std::hash::Hash;
 use std::iter::Peekable;
 use std::{fmt::Debug, fmt::Display, rc::Rc, str::Chars};
 
+use crate::maps::TreeMap;
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub enum DAG<T: Clone> {
     Leaf(T),
@@ -132,6 +134,28 @@ impl<T: Clone> DAG<T> {
             &mut |_, _| 0,
         );
         table
+    }
+}
+
+impl DAG<()> {
+    pub fn label<L, I: Iterator<Item = L>>(
+        self: &Rc<DAG<()>>,
+        mut iter: I,
+    ) -> HashMap<*const DAG<()>, L> {
+        let mut map = HashMap::new();
+
+        self.walk_leaves(&mut |leaf, _| {
+            let label = iter.next().unwrap();
+            map.insert(leaf.as_ref() as *const DAG<()>, label);
+        });
+
+        map
+    }
+
+    pub fn identity_map(self: &Rc<Self>) -> TreeMap<()> {
+        let mut map = TreeMap::new();
+        self.walk_leaves(&mut |leaf, _| map.insert(leaf.as_ref(), leaf.clone()));
+        map
     }
 }
 

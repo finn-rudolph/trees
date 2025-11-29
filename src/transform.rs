@@ -50,7 +50,7 @@ impl<'a, T: Clone> TreeTransform<'a, T> {
         TreeMap::from_embedding(self.source(), root)
     }
 
-    pub fn matches(&self, tree: &Rc<DAG<T>>) -> Vec<Rc<DAG<T>>> {
+    pub fn matches<S: Clone>(&self, tree: &Rc<DAG<S>>) -> Vec<Rc<DAG<S>>> {
         let mut matched = Vec::new();
 
         let pattern_table = if self.source_left {
