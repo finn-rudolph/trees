@@ -1,41 +1,19 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
-    hash::Hash,
+    fmt::{Debug, Display},
     rc::Rc,
 };
 
 use crate::{
-    bidag::{BinaryChildren, BinaryDirectedAcyclicGraph},
+    bidag::{BinaryChildren, FromChildren},
+    byaddr::TermByAddress,
+    labeled::LabeledTermRef,
     maps::{NodeIndex, TermBijection, TermMap},
 };
 
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Eq, PartialEq, Hash, Clone)]
 pub enum Term {
     Variable,
     Operation(TermRef, TermRef),
-}
-
-pub struct TermByAddress(Rc<Term>);
-
-impl Hash for TermByAddress {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        (self.0.as_ref() as *const Term).hash(state);
-    }
-}
-
-impl PartialEq for &TermByAddress {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for &TermByAddress {}
-
-impl From<TermRef> for TermByAddress {
-    fn from(value: TermRef) -> Self {
-        Self(value)
-    }
 }
 
 pub type TermRef = Rc<Term>;
@@ -48,22 +26,22 @@ impl Term {
         self.try_map(&mut |_| iter.next())
     }
 
-    pub fn label_with<T, F: FnMut(&TermRef, usize) -> T>(
+    pub fn label_with<T, F: FnMut(usize) -> T>(
         self: &TermRef,
         mut labeler: F,
     ) -> LabeledTermRef<T> {
         let mut count = 0;
         self.map(
             &mut #[inline(always)]
-            |leaf| {
-                let label = labeler(leaf, count);
+            |_leaf| {
+                let label = labeler(count);
                 count += 1;
                 label
             },
         )
     }
 
-    pub fn clone_with_leaf_count(self: &TermRef) -> (TermRef, usize) {
+    pub fn counted_clone(&self) -> (TermRef, usize) {
         let mut leaf_count = 0;
         (
             self.replace_leaves(&mut |_| {
@@ -89,13 +67,15 @@ impl Term {
                 Rc::new(Self::Variable)
             }
             Some((left, right)) => {
-                if &TermByAddress::from(self.clone()) == match_root {
+                if &TermByAddress::from(self.as_ref()) == match_root {
+                    let offset_leaf_index = *leaf_index;
                     bijection
                         .target()
-                        .replace_leaves_with_count(&mut |_, target_leaf_index| {
+                        .counted_replace_leaves(&mut |_, target_leaf_index| {
                             let translated_index = bijection.backward()[target_leaf_index];
                             let (replacement, start, end) = &replacements[translated_index];
-                            computed_map.extend((start + *leaf_index)..(end + *leaf_index));
+                            computed_map
+                                .extend((start + offset_leaf_index)..(end + offset_leaf_index));
                             *leaf_index += end - start;
                             replacement.clone()
                         })
@@ -124,7 +104,7 @@ impl Term {
     pub fn substitute<'a>(
         self: &TermRef,
         match_root: TermByAddress,
-        bijection: TermBijection<'_>,
+        bijection: &TermBijection<'_>,
     ) -> TermBijection<'static> {
         // replacements[i] = (replacement, a, b) such that replacment is a copy of the tree at
         // the i-th leaf of the embedded source. The origial tree has the leaves [a, b) in `match_root`.
@@ -132,14 +112,14 @@ impl Term {
         let mut replacement_leaf_index = 0;
 
         bijection.source().propagate(
-            &match_root.0,
+            match_root.as_ref(),
             &mut |_, embedded_node| {
                 embedded_node
                     .children()
                     .expect("match_root not embedded here")
             },
             &mut |_, embedded_node| {
-                let (replacement, replace_size) = embedded_node.clone_with_leaf_count();
+                let (replacement, replace_size) = embedded_node.counted_clone();
                 replacements.push((
                     replacement,
                     replacement_leaf_index,
@@ -159,21 +139,32 @@ impl Term {
             &mut computed_map,
         );
 
-        let result_map_backward = TermMap::new(self.clone(), result, computed_map.into());
+        let result_map_backward = TermMap::new(result, self.clone(), computed_map.into());
         let mut result_bijection = result_map_backward.upgrade();
         result_bijection.invert();
         result_bijection
     }
 }
 
-impl BinaryDirectedAcyclicGraph<()> for TermRef {
+impl BinaryChildren for Term {
+    fn children(&self) -> Option<(&Self, &Self)> {
+        match self {
+            Term::Variable => None,
+            Term::Operation(left, right) => Some((left, right)),
+        }
+    }
+}
+
+impl BinaryChildren for Rc<Term> {
     fn children(&self) -> Option<(&Self, &Self)> {
         match self.as_ref() {
             Term::Variable => None,
             Term::Operation(left, right) => Some((left, right)),
         }
     }
+}
 
+impl FromChildren<()> for TermRef {
     fn from_children(left: Self, right: Self) -> Self {
         Rc::new(Term::Operation(left, right))
     }
@@ -183,88 +174,36 @@ impl BinaryDirectedAcyclicGraph<()> for TermRef {
     }
 }
 
-pub type LabeledTermRef<T> = Rc<LabeledTerm<T>>;
-
-pub enum LabeledTerm<T> {
-    Variable(T),
-    Operation(Rc<LabeledTerm<T>>, Rc<LabeledTerm<T>>),
-}
-
-impl<T> BinaryDirectedAcyclicGraph<T> for Rc<LabeledTerm<T>> {
-    fn children(&self) -> Option<(&Self, &Self)> {
-        match self.as_ref() {
-            LabeledTerm::Variable(_value) => None,
-            LabeledTerm::Operation(left, right) => Some((left, right)),
-        }
-    }
-
-    fn from_children(left: Self, right: Self) -> Self {
-        Rc::new(LabeledTerm::Operation(left, right))
-    }
-
-    fn from_leaf(value: T) -> Self {
-        Rc::new(LabeledTerm::Variable(value))
-    }
-}
-
-pub struct TermIndexing(HashMap<(usize, usize), usize>);
-
-impl From<&TermRef> for TermIndexing {
-    fn from(value: &TermRef) -> Self {
-        let mut table = HashMap::new();
-
-        value.reduce(
-            &mut |_node, left_label, right_label| {
-                if let Some(label) = table.get(&(left_label, right_label)) {
-                    *label
-                } else {
-                    table.insert((left_label, right_label), table.len() + 1);
-                    table.len()
-                }
+impl Debug for Term {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut leaf_count = 0;
+        write!(f, "Term[")?;
+        self.display_helper(
+            f,
+            &mut |node, f| write!(f, "("),
+            &mut |node, f| write!(f, ")"),
+            &mut |_, f| write!(f, " * "),
+            &mut |_, f| {
+                leaf_count += 1;
+                write!(f, "{}", leaf_count - 1)
             },
-            &mut |_| 0,
-        );
-        TermIndexing(table)
+        )?;
+        write!(f, "]")
     }
 }
 
-pub struct IndexedTerm {
-    term: TermRef,
-    index: TermIndexing,
-}
-
-impl From<TermRef> for IndexedTerm {
-    fn from(value: TermRef) -> Self {
-        Self {
-            index: TermIndexing::from(&value),
-            term: value,
-        }
-    }
-}
-
-impl IndexedTerm {
-    // there is room for optimization here: Use BTreeSet instead of HashSet and
-    // use max/min values to abort loop over `index' early. also `index' could
-    // be stored in Vec instead (we only lookup in term index creation).
-    pub fn matches(&mut self, term: &TermRef) -> Vec<TermByAddress> {
-        let mut matched = Vec::new();
-
-        term.reduce(
-            &mut |node, left_labels, right_labels| -> HashSet<usize> {
-                let mut labels = HashSet::<usize>::from([0]);
-                for ((left_label, right_label), label) in &self.index.0 {
-                    if left_labels.contains(left_label) && right_labels.contains(right_label) {
-                        if *label == self.index.0.len() {
-                            matched.push(TermByAddress::from(node.clone()));
-                        }
-                        labels.insert(*label);
-                    }
-                }
-                labels
+impl Display for Term {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut leaf_count = 0;
+        self.display_helper(
+            f,
+            &mut |node, f| write!(f, "("),
+            &mut |node, f| write!(f, ")"),
+            &mut |_, f| write!(f, " * "),
+            &mut |_, f| {
+                leaf_count += 1;
+                write!(f, "{}", leaf_count - 1)
             },
-            &mut |_| [0].into(),
-        );
-
-        matched
+        )
     }
 }

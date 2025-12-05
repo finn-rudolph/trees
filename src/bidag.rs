@@ -1,8 +1,5 @@
-pub trait BinaryDirectedAcyclicGraph<T> {
+pub trait BinaryChildren {
     fn children(&self) -> Option<(&Self, &Self)>;
-
-    fn from_leaf(value: T) -> Self;
-    fn from_children(left: Self, right: Self) -> Self;
 
     fn is_leaf(&self) -> bool {
         self.children().is_none()
@@ -61,11 +58,18 @@ pub trait BinaryDirectedAcyclicGraph<T> {
         }
     }
 
-    fn replace_leaves_with_count<
-        S,
-        R: BinaryDirectedAcyclicGraph<S>,
-        F: FnMut(&Self, usize) -> R,
-    >(
+    fn replace_leaves<S, R: FromChildren<S>, F: FnMut(&Self) -> R>(
+        &self,
+        transformer: &mut F,
+    ) -> R {
+        self.reduce(
+            &mut #[inline(always)]
+            |_, left, right| R::from_children(left, right),
+            transformer,
+        )
+    }
+
+    fn counted_replace_leaves<S, R: FromChildren<S>, F: FnMut(&Self, usize) -> R>(
         &self,
         transformer: &mut F,
     ) -> R {
@@ -81,18 +85,8 @@ pub trait BinaryDirectedAcyclicGraph<T> {
             },
         )
     }
-    fn replace_leaves<S, R: BinaryDirectedAcyclicGraph<S>, F: FnMut(&Self) -> R>(
-        &self,
-        transformer: &mut F,
-    ) -> R {
-        self.reduce(
-            &mut #[inline(always)]
-            |_, left, right| R::from_children(left, right),
-            transformer,
-        )
-    }
 
-    fn try_map<S, R: BinaryDirectedAcyclicGraph<S>, F: FnMut(&Self) -> Option<S>>(
+    fn try_map<S, R: FromChildren<S>, F: FnMut(&Self) -> Option<S>>(
         &self,
         transformer: &mut F,
     ) -> Option<R> {
@@ -109,10 +103,7 @@ pub trait BinaryDirectedAcyclicGraph<T> {
         }
     }
 
-    fn map<S, R: BinaryDirectedAcyclicGraph<S>, F: FnMut(&Self) -> S>(
-        &self,
-        transformer: &mut F,
-    ) -> R {
+    fn map<S, R: FromChildren<S>, F: FnMut(&Self) -> S>(&self, transformer: &mut F) -> R {
         self.reduce(
             &mut #[inline(always)]
             |_, left, right| R::from_children(left, right),
@@ -120,8 +111,47 @@ pub trait BinaryDirectedAcyclicGraph<T> {
             |leaf| R::from_leaf(transformer(leaf)),
         )
     }
+
+    fn display_helper<
+        T,
+        E,
+        S,
+        FE: FnMut(&Self, &mut S) -> Result<T, E>,
+        FL: FnMut(&Self, &mut S) -> Result<T, E>,
+        FC: FnMut(&Self, &mut S) -> Result<T, E>,
+        L: FnMut(&Self, &mut S) -> Result<T, E>,
+    >(
+        &self,
+        state: &mut S,
+        enter: &mut FE,
+        leave: &mut FL,
+        combine: &mut FC,
+        leaf: &mut L,
+    ) -> Result<T, E> {
+        match self.children() {
+            None => leaf(self, state),
+            Some((left, right)) => {
+                if !left.is_leaf() {
+                    enter(left, state)?;
+                    left.display_helper(state, enter, leave, combine, leaf)?;
+                    leave(left, state)?;
+                } else {
+                    leaf(left, state)?;
+                }
+                combine(self, state)?;
+                if !right.is_leaf() {
+                    enter(right, state)?;
+                    right.display_helper(state, enter, leave, combine, leaf)?;
+                    leave(right, state)
+                } else {
+                    leaf(right, state)
+                }
+            }
+        }
+    }
 }
 
-pub trait BinaryChildren {
-    fn children(&self) -> Option<(&Self, &Self)>;
+pub trait FromChildren<T>: BinaryChildren {
+    fn from_leaf(value: T) -> Self;
+    fn from_children(left: Self, right: Self) -> Self;
 }
