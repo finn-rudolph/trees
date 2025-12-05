@@ -1,9 +1,10 @@
 use std::{
     borrow::Cow,
+    fmt::Debug,
     ops::{Index, Mul, MulAssign, Not},
 };
 
-use crate::term::{Term, TermRef};
+use crate::{labeled::LabeledTerm, term::TermRef};
 
 pub type NodeIndex = usize;
 
@@ -22,14 +23,20 @@ impl<'a> TermMap<'a> {
         }
     }
 
-    pub fn upgrade(self) -> TermBijection<'a> {
-        let mut backward_map = Vec::new();
+    fn backward_map(&self) -> Vec<Option<NodeIndex>> {
+        let max_len = self.map.iter().max().map_or(0, |v| *v + 1);
+        let mut backward_map = vec![None; max_len];
 
         for (s, t) in self.map.iter().enumerate() {
             backward_map[*t] = Some(s);
         }
 
-        let backward: Vec<NodeIndex> = backward_map
+        backward_map
+    }
+
+    pub fn upgrade(self) -> TermBijection<'a> {
+        let backward: Vec<NodeIndex> = self
+            .backward_map()
             .iter()
             .map(|x| x.expect("Not an invertable map"))
             .collect();
@@ -80,6 +87,30 @@ impl<'a> MulAssign<&TermBijection<'_>> for TermMap<'a> {
     }
 }
 
+impl Debug for TermMap<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let backward_map = self.backward_map();
+        let formatted_target = self.target.label_with(&mut |index| {
+            let target_value: Option<usize> = backward_map[index];
+            target_value.map_or(String::from("<unk>"), |v| v.to_string())
+        });
+        write!(f, "TreeMap[{} -> {}]", self.source, formatted_target)
+    }
+}
+
+impl Debug for TermBijection<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        assert!(
+            self.check_bijection(),
+            "TermBijection is not actually a bijection"
+        );
+        let formatted_target = self
+            .target
+            .label_with(&mut |index| self.backward()[index].to_string());
+        write!(f, "TreeBijection[{} <=> {}]", self.source, formatted_target)
+    }
+}
+
 pub struct TermBijection<'a> {
     source: TermRef,
     target: TermRef,
@@ -102,6 +133,17 @@ impl<'a> TermBijection<'a> {
             target: self.source.clone(),
             map: Cow::Borrowed(&self.backward),
         }
+    }
+
+    pub fn check_bijection(&self) -> bool {
+        if self.forward.len() != self.backward.len() {
+            return false;
+        }
+
+        self.forward
+            .iter()
+            .enumerate()
+            .all(|(i, v)| self.backward[*v] == i)
     }
 
     pub fn source(&self) -> &TermRef {
