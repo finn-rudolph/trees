@@ -15,7 +15,8 @@ use std::rc::Rc;
 use clap::Parser;
 
 use crate::{
-    byaddr::TermByAddress, indexing::IndexedTerm, iter::TermIterator, labeled::LabeledTerm,
+    byaddr::TermByAddress, eqclass::EquivalenceClasses, indexing::IndexedTerm, iter::TermIterator,
+    labeled::LabeledTerm,
 };
 
 #[derive(Parser)]
@@ -39,20 +40,23 @@ fn main() {
         LabeledTerm::<String>::parse(right),
     );
 
-    let equiv = left_tree.map_to(right_tree).upgrade();
+    let equiv = left_tree.map_to(right_tree);
 
     println!("equiv: {:?}", equiv);
 
     let pattern = IndexedTerm::from(Rc::new(equiv.source().as_ref().clone()));
 
+    let mut eqclasses = EquivalenceClasses::new();
+
     for term in TermIterator::new(args.leaves) {
-        println!("{}", term);
+        println!("Considering term: {}", term);
         let matches = pattern.matches(&term);
         for matched in matches {
-            println!(
-                "sub: {:?}",
-                term.substitute(TermByAddress::from(matched.as_ref()), &equiv)
-            );
+            let result_equiv = term.substitute(TermByAddress::from(matched.as_ref()), &equiv);
+            println!(" - equivalence: {:?}", result_equiv);
+            eqclasses.add_equiv(result_equiv);
         }
     }
+
+    println!("{:#?}", eqclasses);
 }

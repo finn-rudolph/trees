@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::VecDeque, fmt::Debug};
+use std::{collections::VecDeque, fmt::Debug};
 
 use crate::perm::perms::{PermIndex, Permutation};
 
@@ -7,8 +7,7 @@ use crate::perm::perms::{PermIndex, Permutation};
 /// - https://en.wikipedia.org/wiki/Schreier%E2%80%93Sims_algorithm
 /// - https://arxiv.org/pdf/math/9201304
 /// - https://blogs.cs.st-andrews.ac.uk/codima/files/2015/11/CoDiMa2015_Holt.pdf
-
-struct PermutationGroup<'a> {
+pub struct PermutationGroup<'a> {
     stab_point: PermIndex,
     stab_subgroup: Option<Box<PermutationGroup<'a>>>,
     generators: Vec<Permutation<'a>>,
@@ -30,8 +29,7 @@ impl<'a> PermutationGroup<'a> {
         let stab_point = generators
             .iter()
             .map(|perm| perm.nonfix_index())
-            .skip_while(|index| index.is_none())
-            .next()
+            .find(|index| !index.is_none())
             .flatten()
             .expect("No non-identity generator");
 
@@ -77,6 +75,10 @@ impl<'a> PermutationGroup<'a> {
         } else {
             false
         }
+    }
+
+    pub fn stab_subgroup(&self) -> &Option<Box<PermutationGroup<'_>>> {
+        &self.stab_subgroup
     }
 
     pub fn extend(&mut self, generator: Permutation<'a>) {
@@ -144,11 +146,11 @@ impl<'a> Debug for PermutationGroup<'a> {
             self.stab_point, self.generators, self.orbits
         )?;
 
-        if f.alternate() {
-            write!(f, "\n")?;
-            if let Some(subgroup) = &self.stab_subgroup {
-                Debug::fmt(&subgroup, f)?;
-            }
+        if f.alternate()
+            && let Some(subgroup) = &self.stab_subgroup
+        {
+            writeln!(f)?;
+            Debug::fmt(&subgroup, f)?;
         }
 
         Ok(())

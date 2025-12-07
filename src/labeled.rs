@@ -2,8 +2,8 @@ use std::{collections::HashMap, fmt::Display, hash::Hash, iter::Peekable, rc::Rc
 
 use crate::{
     bidag::{BinaryChildren, FromChildren},
-    maps::{TermBijection, TermMap},
-    term::{Term, TermRef},
+    maps::{NodeIndex, TermMap},
+    term::TermRef,
 };
 
 pub type LabeledTermRef<T> = Rc<LabeledTerm<T>>;
@@ -58,7 +58,10 @@ impl<T: Clone + Hash + PartialEq + Eq> LabeledTerm<T> {
         let mut target_labels = HashMap::new();
 
         target.walk_leaves(&mut |leaf| {
-            target_labels.insert(leaf.label().unwrap().clone(), target_labels.len());
+            target_labels.insert(
+                leaf.label().unwrap().clone(),
+                target_labels.len() as NodeIndex,
+            );
         });
 
         let mut map = Vec::new();
@@ -101,8 +104,8 @@ impl<T: Display> Display for LabeledTerm<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.display_helper(
             f,
-            &mut |node, f| write!(f, "("),
-            &mut |node, f| write!(f, ")"),
+            &mut |_, f| write!(f, "("),
+            &mut |_, f| write!(f, ")"),
             &mut |_, f| write!(f, " * "),
             &mut |leaf, f| write!(f, "{}", leaf.label().unwrap()),
         )
