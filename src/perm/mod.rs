@@ -1,2 +1,2 @@
-mod group;
-mod perms;
+pub mod group;
+pub mod perms;

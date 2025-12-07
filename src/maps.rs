@@ -1,25 +1,29 @@
 use std::{
-    borrow::Cow,
-    fmt::Debug,
-    ops::{Index, Mul, MulAssign, Not},
+    borrow::Borrow,
+    fmt::{Debug, Display},
+    ops::{Index, Mul, MulAssign},
 };
 
-use crate::term::TermRef;
+use crate::{
+    perm::perms::{PermIndex, Permutation},
+    term::{Term, TermRef},
+};
 
-pub type NodeIndex = usize;
+pub type NodeIndex = PermIndex;
 
+#[derive(Clone)]
 pub struct TermMap<'a> {
     source: TermRef,
     target: TermRef,
-    map: Cow<'a, [NodeIndex]>,
+    perm: Permutation<'a>,
 }
 
 impl<'a> TermMap<'a> {
-    pub fn new(source: TermRef, target: TermRef, map: Cow<'a, [NodeIndex]>) -> Self {
+    pub fn new(source: TermRef, target: TermRef, perm: Permutation<'a>) -> Self {
         TermMap {
             source,
             target,
-            map,
+            perm,
         }
     }
 
@@ -31,40 +35,27 @@ impl<'a> TermMap<'a> {
         &self.target
     }
 
-    fn inverted_vec(&self) -> Vec<Option<NodeIndex>> {
-        let max_len = self.map.iter().max().map_or(0, |v| *v + 1);
-        let mut backward_map = vec![None; max_len];
-
-        for (s, t) in self.map.iter().enumerate() {
-            backward_map[*t] = Some(s);
+    pub fn backward(&self) -> TermMap<'static> {
+        TermMap {
+            perm: self.perm.inverse(),
+            source: self.target.clone(),
+            target: self.source.clone(),
         }
+    }
 
-        backward_map
+    pub fn perm(&self) -> &Permutation<'a> {
+        &self.perm
+    }
+
+    pub fn into_perm(self) -> Permutation<'a> {
+        self.perm
     }
 
     pub fn into_backward(self) -> TermMap<'static> {
         TermMap {
-            map: self
-                .inverted_vec()
-                .iter()
-                .map(|x| x.expect("Not an invertable map"))
-                .collect(),
+            perm: self.perm.inverse(),
             source: self.target,
             target: self.source,
-        }
-    }
-    pub fn upgrade(self) -> TermBijection<'a> {
-        let backward: Vec<NodeIndex> = self
-            .inverted_vec()
-            .iter()
-            .map(|x| x.expect("Not an invertable map"))
-            .collect();
-
-        TermBijection {
-            source: self.source,
-            target: self.target,
-            forward: self.map,
-            backward: backward.into(),
         }
     }
 }
@@ -72,151 +63,52 @@ impl<'a> TermMap<'a> {
 impl<'a> Index<NodeIndex> for TermMap<'a> {
     type Output = NodeIndex;
     fn index(&self, index: NodeIndex) -> &Self::Output {
-        &self.map[index]
+        &self.perm._storage()[index as usize]
     }
 }
 
-impl<'a> MulAssign<&TermMap<'_>> for TermMap<'a> {
-    fn mul_assign(&mut self, rhs: &TermMap<'_>) {
-        self.map.to_mut().iter_mut().for_each(|v| *v = rhs.map[*v]);
-    }
-}
-
-impl Mul<&TermMap<'_>> for &TermMap<'_> {
+impl<'a, B: Borrow<TermMap<'a>>> Mul<B> for &TermMap<'_> {
     type Output = TermMap<'static>;
-    fn mul(self, rhs: &TermMap) -> Self::Output {
+    fn mul(self, rhs: B) -> Self::Output {
+        let rhs_ref = rhs.borrow();
         TermMap {
             source: self.source.clone(),
-            target: rhs.target.clone(),
-            map: self.map.iter().map(|v| rhs.map[*v]).collect(),
+            target: rhs_ref.target.clone(),
+            perm: &self.perm * &rhs_ref.perm,
         }
     }
 }
 
-impl Mul<&TermBijection<'_>> for &TermMap<'_> {
-    type Output = TermMap<'static>;
-    fn mul(self, rhs: &TermBijection) -> Self::Output {
-        self * &rhs.forward()
+impl<'a, B: Borrow<TermMap<'a>>> MulAssign<B> for &mut TermMap<'_> {
+    fn mul_assign(&mut self, rhs: B) {
+        self.target = rhs.borrow().target().clone();
+        self.perm *= &rhs.borrow().perm;
     }
 }
 
-impl<'a> MulAssign<&TermBijection<'_>> for TermMap<'a> {
-    fn mul_assign(&mut self, rhs: &TermBijection<'_>) {
-        *self *= &rhs.forward()
+impl<'a, B: Borrow<TermMap<'a>>> MulAssign<B> for TermMap<'_> {
+    fn mul_assign(&mut self, rhs: B) {
+        self.target = rhs.borrow().target().clone();
+        self.perm *= &rhs.borrow().perm;
     }
 }
 
 impl Debug for TermMap<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let backward_map = self.inverted_vec();
-        let formatted_target = self.target.label_with(&mut |index| {
-            let target_value: Option<usize> = backward_map[index];
-            target_value.map_or(String::from("<unk>"), |v| v.to_string())
-        });
+        let backward = self.perm.inverse();
+        let formatted_target = self
+            .target
+            .label_with(&mut |index| backward.get(index as PermIndex).to_string());
         write!(f, "TreeMap[{} -> {}]", self.source, formatted_target)
     }
 }
 
-impl Debug for TermBijection<'_> {
+impl Display for TermMap<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        assert!(
-            self.check_bijection(),
-            "TermBijection is not actually a bijection"
-        );
+        let backward = self.perm.inverse();
         let formatted_target = self
             .target
-            .label_with(&mut |index| self.backward()[index].to_string());
-        write!(f, "TreeBijection[{} <=> {}]", self.source, formatted_target)
-    }
-}
-
-pub struct TermBijection<'a> {
-    source: TermRef,
-    target: TermRef,
-    forward: Cow<'a, [NodeIndex]>,
-    backward: Cow<'a, [NodeIndex]>,
-}
-
-impl<'a> TermBijection<'a> {
-    pub fn forward(&self) -> TermMap {
-        TermMap {
-            source: self.source.clone(),
-            target: self.target.clone(),
-            map: Cow::Borrowed(&self.forward),
-        }
-    }
-
-    pub fn backward(&self) -> TermMap {
-        TermMap {
-            source: self.target.clone(),
-            target: self.source.clone(),
-            map: Cow::Borrowed(&self.backward),
-        }
-    }
-
-    pub fn check_bijection(&self) -> bool {
-        if self.forward.len() != self.backward.len() {
-            return false;
-        }
-
-        self.forward
-            .iter()
-            .enumerate()
-            .all(|(i, v)| self.backward[*v] == i)
-    }
-
-    pub fn source(&self) -> &TermRef {
-        &self.source
-    }
-
-    pub fn target(&self) -> &TermRef {
-        &self.target
-    }
-
-    pub fn invert(&mut self) {
-        std::mem::swap(&mut self.forward, &mut self.backward);
-        std::mem::swap(&mut self.source, &mut self.target);
-    }
-}
-
-impl<'a> MulAssign<&TermBijection<'_>> for TermBijection<'a> {
-    fn mul_assign(&mut self, rhs: &TermBijection<'_>) {
-        self.forward
-            .to_mut()
-            .iter_mut()
-            .for_each(|v| *v = rhs.forward[*v]);
-
-        self.backward = rhs.backward.iter().map(|v| self.backward[*v]).collect();
-    }
-}
-
-impl<'a> Mul<&TermBijection<'_>> for &TermBijection<'a> {
-    type Output = TermBijection<'a>;
-    fn mul(self, rhs: &TermBijection) -> Self::Output {
-        TermBijection {
-            source: self.source.clone(),
-            target: rhs.target.clone(),
-            forward: self.forward.iter().map(|v| rhs.forward[*v]).collect(),
-            backward: rhs.backward.iter().map(|v| self.backward[*v]).collect(),
-        }
-    }
-}
-
-impl Mul<&TermMap<'_>> for &TermBijection<'_> {
-    type Output = TermMap<'static>;
-    fn mul(self, rhs: &TermMap) -> Self::Output {
-        &self.forward() * rhs
-    }
-}
-
-impl<'b, 'a: 'b> Not for &'a TermBijection<'b> {
-    type Output = TermBijection<'b>;
-    fn not(self) -> Self::Output {
-        TermBijection {
-            backward: Cow::Borrowed(&self.forward),
-            forward: Cow::Borrowed(&self.backward),
-            source: self.target.clone(),
-            target: self.source.clone(),
-        }
+            .label_with(&mut |index| backward.get(index as PermIndex).to_string());
+        write!(f, "{} -> {}", self.source, formatted_target)
     }
 }

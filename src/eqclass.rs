@@ -1,24 +1,20 @@
-use std::{collections::HashMap, slice::SliceIndex};
+use std::{collections::HashMap, fmt::Debug};
 
-use crate::{
-    indexing::IndexedTerm,
-    maps::{TermBijection, TermMap},
-    term::TermRef,
-};
+use crate::{indexing::IndexedTerm, maps::TermMap, perm::group::PermutationGroup, term::TermRef};
 
 type EqClassEntryIndex = usize;
 
 struct EqClassRootEntry {
     term: IndexedTerm,
     rank: usize,
-    automorphisms: Vec<TermBijection<'static>>,
+    automorphisms: Option<PermutationGroup<'static>>,
 }
 
 impl EqClassRootEntry {
     pub fn into_child(
         self,
         parent: EqClassEntryIndex,
-        parent_map: TermBijection<'static>,
+        parent_map: TermMap<'static>,
     ) -> EqClassEntry {
         EqClassEntry::Child(EqClassChildEntry {
             parent,
@@ -31,7 +27,7 @@ impl EqClassRootEntry {
 struct EqClassChildEntry {
     term: IndexedTerm,
     parent: EqClassEntryIndex,
-    parent_map: TermBijection<'static>,
+    parent_map: TermMap<'static>,
 }
 
 enum EqClassEntry {
@@ -44,7 +40,7 @@ impl EqClassEntry {
         EqClassEntry::Root(EqClassRootEntry {
             term: IndexedTerm::from(term.clone()),
             rank: 0,
-            automorphisms: Vec::new(),
+            automorphisms: None,
         })
     }
 
@@ -81,12 +77,19 @@ impl EqClassEntry {
     }
 }
 
-struct EquivalenceClasses {
+pub struct EquivalenceClasses {
     entries: Vec<EqClassEntry>,
     by_shape: HashMap<TermRef, EqClassEntryIndex>,
 }
 
 impl EquivalenceClasses {
+    pub fn new() -> Self {
+        EquivalenceClasses {
+            entries: Vec::new(),
+            by_shape: HashMap::new(),
+        }
+    }
+
     fn parent_of(&self, index: EqClassEntryIndex) -> Option<EqClassEntryIndex> {
         match &self.entries[index] {
             EqClassEntry::Root(_) => None,
@@ -102,7 +105,7 @@ impl EquivalenceClasses {
         })
     }
 
-    fn add_equiv(&mut self, map: TermMap) {
+    pub fn add_equiv(&mut self, map: TermMap) {
         let target = self.entry_for_term(map.target());
         let source = self.entry_for_term(map.source());
         let mut source_to_target_root = map;
@@ -111,11 +114,16 @@ impl EquivalenceClasses {
         let mut source_root = self.find(source, Some(&mut target_root_to_source_root));
 
         if target_root == source_root {
-            // check if target_root_to_source_root already in automorphisms
             let root_entry = self.entries[target_root].as_mut_root();
-            root_entry
-                .automorphisms
-                .push(target_root_to_source_root.upgrade());
+            let perm = target_root_to_source_root.into_perm();
+
+            if let Some(non_fixpoint) = perm.nonfix_index() {
+                root_entry
+                    .automorphisms
+                    .get_or_insert_with(|| PermutationGroup::new(non_fixpoint))
+                    .extend(perm);
+            }
+
             return;
         }
 
@@ -138,7 +146,7 @@ impl EquivalenceClasses {
         if let EqClassEntry::Root(target_owned) = self.entries.swap_remove(target_root) {
             let last_index = self.entries.len();
             self.entries
-                .push(target_owned.into_child(source_root, target_root_to_source_root.upgrade()));
+                .push(target_owned.into_child(source_root, target_root_to_source_root));
             self.entries.swap(target_root, last_index);
         } else {
             unreachable!()
@@ -175,5 +183,64 @@ impl EquivalenceClasses {
                 }
             }
         }
+    }
+
+    fn find_immut(
+        &self,
+        mut index: EqClassEntryIndex,
+        mut tracking_map: &mut TermMap,
+    ) -> EqClassEntryIndex {
+        loop {
+            match &self.entries[index] {
+                EqClassEntry::Child(child) => {
+                    tracking_map *= &child.parent_map;
+                    index = child.parent;
+                }
+                EqClassEntry::Root(_) => {
+                    return index;
+                }
+            }
+        }
+    }
+}
+
+impl Debug for EquivalenceClasses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut classes = HashMap::new();
+
+        for (i, entry) in self.entries.iter().enumerate() {
+            match entry {
+                EqClassEntry::Root(_) => {
+                    classes.insert(i, Vec::new());
+                }
+                EqClassEntry::Child(child) => {
+                    let mut map_to_root = child.term.term().identity_map();
+                    let root = self.find_immut(i, &mut map_to_root);
+
+                    classes
+                        .entry(root)
+                        .or_insert_with(|| Vec::new())
+                        .push(map_to_root);
+                }
+            }
+        }
+
+        writeln!(f, "{} Equivalence Classes:", classes.len())?;
+        for (i, (root_index, maps)) in classes.iter().enumerate() {
+            writeln!(f, "Class {}:", i)?;
+            let root_entry = self.entries[*root_index].as_root();
+            writeln!(f, "\tTerm   : {}", root_entry.term.term())?;
+            if let Some(morphs) = &root_entry.automorphisms {
+                writeln!(f, "\tMorphs : {:?}", morphs)?;
+            }
+
+            if maps.len() > 0 {
+                writeln!(f, "\tChildren ({}):", maps.len())?;
+                for map in maps {
+                    writeln!(f, "\t\t{}", map.backward())?;
+                }
+            }
+        }
+        Ok(())
     }
 }

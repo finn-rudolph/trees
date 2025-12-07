@@ -1,5 +1,8 @@
 use crate::bidag::BinaryChildren;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+};
 
 use crate::term::TermRef;
 
@@ -27,6 +30,12 @@ impl From<&TermRef> for TermIndexing {
 pub struct IndexedTerm {
     term: TermRef,
     index: TermIndexing,
+}
+
+impl IndexedTerm {
+    pub fn term(&self) -> &TermRef {
+        &self.term
+    }
 }
 
 impl From<TermRef> for IndexedTerm {
@@ -62,5 +71,11 @@ impl IndexedTerm {
         );
 
         matched
+    }
+}
+
+impl Debug for IndexedTerm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IndexedTerm[{}]", self.term)
     }
 }

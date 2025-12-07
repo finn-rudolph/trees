@@ -1,3 +1,5 @@
+use crate::maps::NodeIndex;
+
 pub trait BinaryChildren {
     fn children(&self) -> Option<(&Self, &Self)>;
 
@@ -69,7 +71,7 @@ pub trait BinaryChildren {
         )
     }
 
-    fn counted_replace_leaves<S, R: FromChildren<S>, F: FnMut(&Self, usize) -> R>(
+    fn counted_replace_leaves<S, R: FromChildren<S>, F: FnMut(&Self, NodeIndex) -> R>(
         &self,
         transformer: &mut F,
     ) -> R {
@@ -93,10 +95,10 @@ pub trait BinaryChildren {
         match self.children() {
             None => transformer(self).map(R::from_leaf),
             Some((left, right)) => {
-                if let Some(left_result) = left.try_map(transformer) {
-                    if let Some(right_result) = right.try_map(transformer) {
-                        return Some(R::from_children(left_result, right_result));
-                    }
+                if let Some(left_result) = left.try_map(transformer)
+                    && let Some(right_result) = right.try_map(transformer)
+                {
+                    return Some(R::from_children(left_result, right_result));
                 }
                 None
             }

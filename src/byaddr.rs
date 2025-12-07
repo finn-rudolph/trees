@@ -18,7 +18,7 @@ impl AsRef<Term> for TermByAddress<'_> {
 
 impl<'a> PartialEq for &TermByAddress<'a> {
     fn eq(&self, other: &Self) -> bool {
-        (self.0 as *const Term) == (other.0 as *const Term)
+        std::ptr::eq(self.0 as *const Term, other.0 as *const Term)
     }
 }
 

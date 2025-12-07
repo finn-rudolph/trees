@@ -7,7 +7,8 @@ use crate::{
     bidag::{BinaryChildren, FromChildren},
     byaddr::TermByAddress,
     labeled::LabeledTermRef,
-    maps::{NodeIndex, TermBijection, TermMap},
+    maps::{NodeIndex, TermMap},
+    perm::perms::PermIndex,
 };
 
 #[derive(Eq, PartialEq, Hash, Clone)]
@@ -41,7 +42,7 @@ impl Term {
         )
     }
 
-    pub fn counted_clone(&self) -> (TermRef, usize) {
+    pub fn counted_clone(&self) -> (TermRef, NodeIndex) {
         let mut leaf_count = 0;
         (
             self.replace_leaves(&mut |_| {
@@ -56,7 +57,7 @@ impl Term {
         self: &TermRef,
         match_root: &TermByAddress,
         replacements: &Vec<(TermRef, NodeIndex, NodeIndex)>,
-        bijection: &TermBijection<'_>,
+        backward_map: &TermMap<'_>,
         leaf_index: &mut NodeIndex,
         computed_map: &mut Vec<NodeIndex>,
     ) -> TermRef {
@@ -69,11 +70,12 @@ impl Term {
             Some((left, right)) => {
                 if &TermByAddress::from(self.as_ref()) == match_root {
                     let offset_leaf_index = *leaf_index;
-                    bijection
-                        .target()
+                    backward_map
+                        .source()
                         .counted_replace_leaves(&mut |_, target_leaf_index| {
-                            let translated_index = bijection.backward()[target_leaf_index];
-                            let (replacement, start, end) = &replacements[translated_index];
+                            let translated_index = backward_map[target_leaf_index];
+                            let (replacement, start, end) =
+                                &replacements[translated_index as usize];
                             computed_map
                                 .extend((start + offset_leaf_index)..(end + offset_leaf_index));
                             *leaf_index += end - start;
@@ -83,14 +85,14 @@ impl Term {
                     let left_result = left.insert_replacements_helper(
                         match_root,
                         replacements,
-                        bijection,
+                        backward_map,
                         leaf_index,
                         computed_map,
                     );
                     let right_result = right.insert_replacements_helper(
                         match_root,
                         replacements,
-                        bijection,
+                        backward_map,
                         leaf_index,
                         computed_map,
                     );
@@ -101,17 +103,26 @@ impl Term {
         }
     }
 
-    pub fn substitute<'a>(
+    pub fn identity_map(self: &TermRef) -> TermMap<'static> {
+        let (_, leaf_count) = self.counted_clone();
+        TermMap::new(
+            self.clone(),
+            self.clone(),
+            (0..leaf_count as PermIndex).collect::<Vec<_>>().into(),
+        )
+    }
+
+    pub fn substitute(
         self: &TermRef,
         match_root: TermByAddress,
-        bijection: &TermBijection<'_>,
-    ) -> TermBijection<'static> {
+        map: &TermMap<'_>,
+    ) -> TermMap<'static> {
         // replacements[i] = (replacement, a, b) such that replacment is a copy of the tree at
         // the i-th leaf of the embedded source. The origial tree has the leaves [a, b) in `match_root`.
         let mut replacements = Vec::new();
         let mut replacement_leaf_index = 0;
 
-        bijection.source().propagate(
+        map.source().propagate(
             match_root.as_ref(),
             &mut |_, embedded_node| {
                 embedded_node
@@ -134,15 +145,13 @@ impl Term {
         let result = self.insert_replacements_helper(
             &match_root,
             &replacements,
-            &bijection,
+            &map.backward(),
             &mut result_leaf_index,
             &mut computed_map,
         );
 
         let result_map_backward = TermMap::new(result, self.clone(), computed_map.into());
-        let mut result_bijection = result_map_backward.upgrade();
-        result_bijection.invert();
-        result_bijection
+        result_map_backward.into_backward()
     }
 }
 
@@ -180,8 +189,8 @@ impl Debug for Term {
         write!(f, "Term[")?;
         self.display_helper(
             f,
-            &mut |node, f| write!(f, "("),
-            &mut |node, f| write!(f, ")"),
+            &mut |_, f| write!(f, "("),
+            &mut |_, f| write!(f, ")"),
             &mut |_, f| write!(f, " * "),
             &mut |_, f| {
                 leaf_count += 1;
@@ -197,8 +206,8 @@ impl Display for Term {
         let mut leaf_count = 0;
         self.display_helper(
             f,
-            &mut |node, f| write!(f, "("),
-            &mut |node, f| write!(f, ")"),
+            &mut |_, f| write!(f, "("),
+            &mut |_, f| write!(f, ")"),
             &mut |_, f| write!(f, " * "),
             &mut |_, f| {
                 leaf_count += 1;

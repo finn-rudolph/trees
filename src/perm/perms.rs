@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, Cow},
     fmt::{Debug, Display},
     ops::{Mul, MulAssign},
 };
@@ -16,7 +16,7 @@ impl<'a> Permutation<'a> {
         &self,
         f: &mut std::fmt::Formatter<'_>,
         start: PermIndex,
-        visited: &mut Vec<bool>,
+        visited: &mut [bool],
         identity: &mut bool,
     ) -> std::fmt::Result {
         visited[start as usize] = true;
@@ -74,7 +74,7 @@ impl<'a> Permutation<'a> {
         }
     }
 
-    pub fn inverse(&self) -> Permutation<'a> {
+    pub fn inverse(&self) -> Permutation<'static> {
         let mut inverse_map: Vec<PermIndex> = vec![0; self.perm.len()];
 
         self.perm.iter().enumerate().for_each(|(i, v)| {
@@ -85,45 +85,20 @@ impl<'a> Permutation<'a> {
             perm: inverse_map.into(),
         }
     }
-}
 
-impl<'a> Mul<&Permutation<'a>> for &Permutation<'a> {
-    type Output = Permutation<'static>;
-    fn mul(self, rhs: &Permutation<'a>) -> Self::Output {
+    pub fn _storage(&self) -> &Cow<'_, [PermIndex]> {
+        &self.perm
+    }
+
+    pub fn times(&self, rhs: &Permutation<'_>) -> Permutation<'static> {
         let max_len = self.perm.len().max(rhs.perm.len()) as PermIndex;
 
         Permutation {
-            perm: (0..max_len)
-                .into_iter()
-                .map(|i| rhs.get(self.get(i)))
-                .collect(),
+            perm: (0..max_len).map(|i| rhs.get(self.get(i))).collect(),
         }
     }
-}
 
-impl<'a> Mul<&Permutation<'a>> for Permutation<'a> {
-    type Output = Permutation<'static>;
-    fn mul(self, rhs: &Permutation<'a>) -> Self::Output {
-        &self * rhs
-    }
-}
-
-impl<'a> Mul<&mut Permutation<'a>> for Permutation<'a> {
-    type Output = Permutation<'static>;
-    fn mul(self, rhs: &mut Permutation<'a>) -> Self::Output {
-        &self * rhs
-    }
-}
-
-impl<'a> Mul<&Permutation<'a>> for &mut Permutation<'a> {
-    type Output = Permutation<'static>;
-    fn mul(self, rhs: &Permutation<'a>) -> Self::Output {
-        &*self * rhs
-    }
-}
-
-impl<'a> MulAssign<&Permutation<'a>> for Permutation<'a> {
-    fn mul_assign(&mut self, rhs: &Permutation<'a>) {
+    pub fn times_assign(&mut self, rhs: &Permutation<'_>) {
         let rhs_len = rhs.perm.len() as PermIndex;
         let self_len = self.perm.len() as PermIndex;
         if rhs_len > self_len {
@@ -134,15 +109,36 @@ impl<'a> MulAssign<&Permutation<'a>> for Permutation<'a> {
     }
 }
 
-impl<'a> MulAssign<Permutation<'a>> for Permutation<'a> {
-    fn mul_assign(&mut self, rhs: Permutation<'a>) {
-        *self *= &rhs;
+impl<'a, B: Borrow<Permutation<'a>>> Mul<B> for Permutation<'_> {
+    type Output = Permutation<'static>;
+    fn mul(self, rhs: B) -> Self::Output {
+        self.times(rhs.borrow())
     }
 }
 
-impl From<Vec<PermIndex>> for Permutation<'static> {
-    fn from(value: Vec<PermIndex>) -> Self {
-        Permutation { perm: value.into() }
+impl<'a, B: Borrow<Permutation<'a>>> Mul<B> for &Permutation<'_> {
+    type Output = Permutation<'static>;
+    fn mul(self, rhs: B) -> Self::Output {
+        self.times(rhs.borrow())
+    }
+}
+
+impl<'a, B: Borrow<Permutation<'a>>> Mul<B> for &mut Permutation<'_> {
+    type Output = Permutation<'static>;
+    fn mul(self, rhs: B) -> Self::Output {
+        self.times(rhs.borrow())
+    }
+}
+
+impl<'a, B: Borrow<Permutation<'a>>> MulAssign<B> for Permutation<'_> {
+    fn mul_assign(&mut self, rhs: B) {
+        self.times_assign(rhs.borrow());
+    }
+}
+
+impl<'a, T: Into<Cow<'a, [PermIndex]>>> From<T> for Permutation<'a> {
+    fn from(value: T) -> Self {
+        Self { perm: value.into() }
     }
 }
 
@@ -157,7 +153,7 @@ impl<'a> Display for Permutation<'a> {
         if !f.alternate() {
             let mut visited = vec![false; self.perm.len()];
             let mut identity = true;
-            if self.perm.len() != 0 {
+            if !self.perm.is_empty() {
                 'inf: loop {
                     let mut start_index = 0;
                     while visited[start_index] {
