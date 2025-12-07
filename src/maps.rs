@@ -4,7 +4,7 @@ use std::{
     ops::{Index, Mul, MulAssign, Not},
 };
 
-use crate::{labeled::LabeledTerm, term::TermRef};
+use crate::term::TermRef;
 
 pub type NodeIndex = usize;
 
@@ -23,7 +23,15 @@ impl<'a> TermMap<'a> {
         }
     }
 
-    fn backward_map(&self) -> Vec<Option<NodeIndex>> {
+    pub fn source(&self) -> &TermRef {
+        &self.source
+    }
+
+    pub fn target(&self) -> &TermRef {
+        &self.target
+    }
+
+    fn inverted_vec(&self) -> Vec<Option<NodeIndex>> {
         let max_len = self.map.iter().max().map_or(0, |v| *v + 1);
         let mut backward_map = vec![None; max_len];
 
@@ -34,9 +42,20 @@ impl<'a> TermMap<'a> {
         backward_map
     }
 
+    pub fn into_backward(self) -> TermMap<'static> {
+        TermMap {
+            map: self
+                .inverted_vec()
+                .iter()
+                .map(|x| x.expect("Not an invertable map"))
+                .collect(),
+            source: self.target,
+            target: self.source,
+        }
+    }
     pub fn upgrade(self) -> TermBijection<'a> {
         let backward: Vec<NodeIndex> = self
-            .backward_map()
+            .inverted_vec()
             .iter()
             .map(|x| x.expect("Not an invertable map"))
             .collect();
@@ -89,7 +108,7 @@ impl<'a> MulAssign<&TermBijection<'_>> for TermMap<'a> {
 
 impl Debug for TermMap<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let backward_map = self.backward_map();
+        let backward_map = self.inverted_vec();
         let formatted_target = self.target.label_with(&mut |index| {
             let target_value: Option<usize> = backward_map[index];
             target_value.map_or(String::from("<unk>"), |v| v.to_string())
