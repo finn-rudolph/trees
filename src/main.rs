@@ -2,10 +2,12 @@
 
 mod bidag;
 mod byaddr;
+mod eqclass;
 mod indexing;
 mod iter;
 mod labeled;
 mod maps;
+mod perm;
 mod term;
 
 use std::rc::Rc;
